@@ -1,0 +1,656 @@
+Allez on commence direct avec un requete sql: (changez le prefix x2)
+
+ALTER TABLE `prefix_cart_rule`
+  ADD `payment_restriction` TINYINT(1) NOT NULL DEFAULT 0 AFTER `carrier_restriction`;
+
+CREATE TABLE IF NOT EXISTS `prefix_cart_rule_module` (
+  `id_cart_rule` INT UNSIGNED NOT NULL,
+  `id_module` INT UNSIGNED NOT NULL,
+  PRIMARY KEY (`id_cart_rule`,`id_module`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+ 
+
+---------------------------------------------------
+
+Pour les fichiers, je met bon bloc + une ligne avant et après pour vous situer.
+Mes modifs: // delosmod payment_restriction
+
+classes/CartRule.php
+ 
+
+            'carrier_restriction' => ['type' => self::TYPE_BOOL, 'validate' => 'isBool'],
+            'payment_restriction' => ['type' => self::TYPE_BOOL, 'validate' => 'isBool'], // delosmod payment_restriction
+            'group_restriction' => ['type' => self::TYPE_BOOL, 'validate' => 'isBool'],
+
+ 
+
+        $r &= Db::getInstance()->delete('cart_rule_carrier', '`id_cart_rule` = ' . (int) $this->id);
+        $r &= Db::getInstance()->delete('cart_rule_module', '`id_cart_rule` = ' . (int) $this->id); // delosmod payment_restriction
+        $r &= Db::getInstance()->delete('cart_rule_group', '`id_cart_rule` = ' . (int) $this->id);
+
+ 
+
+                return (!$display_error) ? false : $this->trans('You cannot use this voucher with this carrier', [], 'Shop.Notifications.Error');
+            }
+        }
+
+// delosmod payment_restriction
+if (!empty($this->payment_restriction)) {
+    $moduleName = isset($_COOKIE['ps_selected_payment_module']) ? pSQL($_COOKIE['ps_selected_payment_module']) : '';
+    if (!$moduleName) {
+        return (!$display_error) ? false : $this->trans('Select a payment method to use this voucher', [], 'Shop.Notifications.Error');
+    }
+    $ok = (int) \Db::getInstance()->getValue('
+        SELECT 1
+        FROM `'._DB_PREFIX_.'cart_rule_module` crm
+        INNER JOIN `'._DB_PREFIX_.'module` m ON (m.id_module = crm.id_module)
+        WHERE crm.id_cart_rule='.(int)$this->id.' AND m.name="'.$moduleName.'"
+    ');
+    if (!$ok) {
+        return (!$display_error) ? false : $this->trans('This voucher is not valid with this payment method', [], 'Shop.Notifications.Error');
+    }
+}
+// delosmod payment_restriction fin
+
+        if ($this->reduction_exclude_special) {
+
+
+ 
+
+    public function getAssociatedRestrictions(
+        $type,
+        $active_only,
+        $i18n,
+        $offset = null,
+        $limit = null,
+        $search_cart_rule_name = ''
+    ) {
+        $array = ['selected' => [], 'unselected' => []];
+
+        if (!in_array($type, ['country', 'carrier', 'group', 'cart_rule', 'shop', 'module'])) { // delosmod payment_restriction ajout de module
+            return false;
+        }
+        
+// delosmod payment_restriction        
+if ($type === 'module') {
+    $array = ['selected' => [], 'unselected' => []];
+
+    // modules de paiement installés
+    $mods = PaymentModule::getInstalledPaymentModules();
+
+    // modules déjà liés à cette règle
+    $selectedIds = [];
+    if (Validate::isLoadedObject($this)) {
+        $selectedIds = array_map('intval', array_column(
+            Db::getInstance()->executeS('SELECT id_module FROM `'._DB_PREFIX_.'cart_rule_module` WHERE id_cart_rule='.(int)$this->id),
+            'id_module'
+        ));
+    }
+
+$restrictionOff = !((int)($this->payment_restriction ?? 0));
+
+foreach ($mods as $m) {
+    $isSelected = $restrictionOff || in_array((int)$m['id_module'], $selectedIds, true);
+    $row = [
+        'id_module' => (int)$m['id_module'],
+        'name' => $m['name'],
+        'selected' => $isSelected,
+    ];
+    $array[$isSelected ? 'selected' : 'unselected'][] = $row;
+}
+
+    return $array;
+}        
+// delosmod payment_restriction fin
+
+        $shop_list = '';
+        if ($type == 'shop') {
+            $shops = Context::getContext()->employee->getAssociatedShops();
+
+ 
+
+    public static function autoAddToCart(Context $context = null, bool $useOrderPrices = false)
+    {
+        if ($context === null) {
+            $context = Context::getContext();
+        }
+        if (!CartRule::isFeatureActive() || !Validate::isLoadedObject($context->cart)) {
+            return;
+        }
+
+/* delosmod payment_restriction changes only from line AND NOT EXISTS (SELECT 1..
+        $sql = '
+		SELECT SQL_NO_CACHE cr.*
+		FROM ' . _DB_PREFIX_ . 'cart_rule cr
+		LEFT JOIN ' . _DB_PREFIX_ . 'cart_rule_shop crs ON cr.id_cart_rule = crs.id_cart_rule
+		' . (!Validate::isLoadedObject($context->customer) && Group::isFeatureActive() ? ' LEFT JOIN ' . _DB_PREFIX_ . 'cart_rule_group crg ON cr.id_cart_rule = crg.id_cart_rule' : '') . '
+		LEFT JOIN ' . _DB_PREFIX_ . 'cart_rule_carrier crca ON cr.id_cart_rule = crca.id_cart_rule
+		' . ($context->cart->id_carrier ? 'LEFT JOIN ' . _DB_PREFIX_ . 'carrier c ON (c.id_reference = crca.id_carrier AND c.deleted = 0)' : '') . '
+		LEFT JOIN ' . _DB_PREFIX_ . 'cart_rule_country crco ON cr.id_cart_rule = crco.id_cart_rule
+		WHERE cr.active = 1
+		AND cr.code = ""
+		AND cr.quantity > 0
+		AND NOW() BETWEEN cr.date_from AND cr.date_to
+		AND (
+			cr.id_customer = 0
+			' . (Validate::isLoadedObject($context->customer) ? 'OR cr.id_customer = ' . (int) $context->cart->id_customer : '') . '
+		)
+		AND (
+			cr.`carrier_restriction` = 0
+			' . ($context->cart->id_carrier ? 'OR c.id_carrier = ' . (int) $context->cart->id_carrier : '') . '
+		)
+		AND (
+			cr.`shop_restriction` = 0
+			' . ((Shop::isFeatureActive() && $context->shop->id) ? 'OR crs.id_shop = ' . (int) $context->shop->id : '') . '
+		)
+		AND (
+			cr.`group_restriction` = 0
+			' . (Validate::isLoadedObject($context->customer) ? 'OR EXISTS (
+				SELECT 1
+				FROM `' . _DB_PREFIX_ . 'customer_group` cg
+				INNER JOIN `' . _DB_PREFIX_ . 'cart_rule_group` crg ON cg.id_group = crg.id_group
+				WHERE cr.`id_cart_rule` = crg.`id_cart_rule`
+				AND cg.`id_customer` = ' . (int) $context->customer->id . '
+				LIMIT 1
+			)' : (Group::isFeatureActive() ? 'OR crg.`id_group` = ' . (int) Configuration::get('PS_UNIDENTIFIED_GROUP') : '')) . '
+		)
+		AND (
+			cr.`reduction_product` <= 0
+			OR EXISTS (
+				SELECT 1
+				FROM `' . _DB_PREFIX_ . 'cart_product`
+				WHERE `' . _DB_PREFIX_ . 'cart_product`.`id_product` = cr.`reduction_product` AND `id_cart` = ' . (int) $context->cart->id . '
+			)
+		)
+		AND NOT EXISTS (SELECT 1 FROM ' . _DB_PREFIX_ . 'cart_cart_rule WHERE cr.id_cart_rule = ' . _DB_PREFIX_ . 'cart_cart_rule.id_cart_rule
+																			AND id_cart = ' . (int) $context->cart->id . ')
+		ORDER BY priority';
+*/		
+        $sql = '
+		SELECT SQL_NO_CACHE cr.*
+		FROM ' . _DB_PREFIX_ . 'cart_rule cr
+		LEFT JOIN ' . _DB_PREFIX_ . 'cart_rule_shop crs ON cr.id_cart_rule = crs.id_cart_rule
+		' . (!Validate::isLoadedObject($context->customer) && Group::isFeatureActive() ? ' LEFT JOIN ' . _DB_PREFIX_ . 'cart_rule_group crg ON cr.id_cart_rule = crg.id_cart_rule' : '') . '
+		LEFT JOIN ' . _DB_PREFIX_ . 'cart_rule_carrier crca ON cr.id_cart_rule = crca.id_cart_rule
+		' . ($context->cart->id_carrier ? 'LEFT JOIN ' . _DB_PREFIX_ . 'carrier c ON (c.id_reference = crca.id_carrier AND c.deleted = 0)' : '') . '
+		LEFT JOIN ' . _DB_PREFIX_ . 'cart_rule_country crco ON cr.id_cart_rule = crco.id_cart_rule
+		WHERE cr.active = 1
+		AND cr.code = ""
+		AND cr.quantity > 0
+		AND NOW() BETWEEN cr.date_from AND cr.date_to
+		AND (
+			cr.id_customer = 0
+			' . (Validate::isLoadedObject($context->customer) ? 'OR cr.id_customer = ' . (int) $context->cart->id_customer : '') . '
+		)
+		AND (
+			cr.`carrier_restriction` = 0
+			' . ($context->cart->id_carrier ? 'OR c.id_carrier = ' . (int) $context->cart->id_carrier : '') . '
+		)
+		AND (
+			cr.`shop_restriction` = 0
+			' . ((Shop::isFeatureActive() && $context->shop->id) ? 'OR crs.id_shop = ' . (int) $context->shop->id : '') . '
+		)
+		AND (
+			cr.`group_restriction` = 0
+			' . (Validate::isLoadedObject($context->customer) ? 'OR EXISTS (
+				SELECT 1
+				FROM `' . _DB_PREFIX_ . 'customer_group` cg
+				INNER JOIN `' . _DB_PREFIX_ . 'cart_rule_group` crg ON cg.id_group = crg.id_group
+				WHERE cr.`id_cart_rule` = crg.`id_cart_rule`
+				AND cg.`id_customer` = ' . (int) $context->customer->id . '
+				LIMIT 1
+			)' : (Group::isFeatureActive() ? 'OR crg.`id_group` = ' . (int) Configuration::get('PS_UNIDENTIFIED_GROUP') : '')) . '
+		)
+		AND (
+			cr.`reduction_product` <= 0
+			OR EXISTS (
+				SELECT 1
+				FROM `' . _DB_PREFIX_ . 'cart_product`
+				WHERE `' . _DB_PREFIX_ . 'cart_product`.`id_product` = cr.`reduction_product` AND `id_cart` = ' . (int) $context->cart->id . '
+			)
+		)
+		
+AND NOT EXISTS (SELECT 1 FROM ' . _DB_PREFIX_ . 'cart_cart_rule WHERE cr.id_cart_rule = ' . _DB_PREFIX_ . 'cart_cart_rule.id_cart_rule AND id_cart = ' . (int) $context->cart->id . ')';
+
+$moduleName = isset($_COOKIE['ps_selected_payment_module']) ? pSQL($_COOKIE['ps_selected_payment_module']) : '';
+if ($moduleName !== '') {
+  $sql .= ' AND (cr.payment_restriction = 0 OR EXISTS (
+    SELECT 1 FROM `' . _DB_PREFIX_ . 'cart_rule_module` crm
+    INNER JOIN `' . _DB_PREFIX_ . 'module` m ON (m.id_module = crm.id_module)
+    WHERE crm.id_cart_rule = cr.id_cart_rule AND m.name = "' . $moduleName . '"
+  )) ';
+} else {
+  $sql .= ' AND cr.payment_restriction = 0 ';
+}
+
+$sql .= ' ORDER BY cr.priority';
+// delosmod payment_restriction fin
+
+        $result = Db::getInstance()->executeS($sql, true, false);
+        if ($result) {
+            $cart_rules = ObjectModel::hydrateCollection('CartRule', $result);
+            if ($cart_rules) {
+                foreach ($cart_rules as $cart_rule) {
+                    /** @var CartRule $cart_rule */
+                    if ($cart_rule->checkValidity($context, false, false, true, $useOrderPrices)) {
+                        $context->cart->addCartRule($cart_rule->id, $useOrderPrices);
+                    }
+                }
+            }
+        }
+    }
+
+ 
+
+---------------------------------------------------
+
+
+controllers\admin\AdminCartRulesController.php
+ 
+
+    public function postProcess()
+    {
+        if (Tools::isSubmit('submitAddcart_rule') || Tools::isSubmit('submitAddcart_ruleAndStay')) {
+        	
+// delosmod payment_restriction
+        $_POST['payment_restriction'] = (int) Tools::getValue('payment_restriction', 0);
+        if (!$_POST['payment_restriction']) {
+            unset($_POST['module_select']);
+        }
+// delosmod payment_restriction fin
+
+ 
+
+                    $_POST[$type . '_restriction'] = 0;
+                }
+            }
+            
+// delosmod payment_restriction
+$_POST['payment_restriction'] = (int)Tools::getValue('payment_restriction');
+if (!$_POST['payment_restriction']) {
+    unset($_POST['module_select']);
+}
+// delosmod payment_restriction fin            
+            
+            // Remove the gift if the radio button is set to "no"
+            if (!(int) Tools::getValue('free_gift')) {
+
+ 
+
+                if (!Tools::getValue($type . '_restriction')) {
+                    $_POST[$type . '_restriction'] = 0;
+                }
+            }
+            
+// delosmod payment_restriction
+$_POST['payment_restriction'] = (int)Tools::getValue('payment_restriction');
+if (!$_POST['payment_restriction']) {
+    unset($_POST['module_select']);
+}
+// delosmod payment_restriction fin            
+            
+            // Remove the gift if the radio button is set to "no"
+            if (!(int) Tools::getValue('free_gift')) {
+
+ 
+
+    protected function afterUpdate($current_object)
+    {
+
+// delosmod payment_restriction    	
+Db::getInstance()->update('cart_rule', [
+    'payment_restriction' => (int)Tools::getValue('payment_restriction'),
+], 'id_cart_rule='.(int)$current_object->id);
+// delosmod payment_restriction fin 
+    	
+        // All the associations are deleted for an update, then recreated when we call the "afterAdd" method
+        $id_cart_rule = Tools::getValue('id_cart_rule');
+
+-----------
+
+ 
+
+        $id_cart_rule = Tools::getValue('id_cart_rule');
+        foreach (['country', 'carrier', 'group', 'product_rule_group', 'shop', 'module'] as $type) { // delosmod payment_restriction ajout de module
+            Db::getInstance()->delete('cart_rule_' . $type, '`id_cart_rule` = ' . (int) $id_cart_rule);
+
+-----------
+
+ 
+
+    protected function afterAdd($currentObject)
+    {
+        // Add restrictions for generic entities like country, carrier and group
+        
+/* delosmod payment_restriction on remplace par le bloc ci dessous    
+        foreach (['country', 'carrier', 'group', 'shop'] as $type) {
+            if (Tools::getValue($type . '_restriction') && is_array($array = Tools::getValue($type . '_select')) && count($array)) {
+                $values = [];
+                foreach ($array as $id) {
+                    $values[] = '(' . (int) $currentObject->id . ',' . (int) $id . ')';
+                }
+                Db::getInstance()->execute('INSERT INTO `' . _DB_PREFIX_ . 'cart_rule_' . $type . '` (`id_cart_rule`, `id_' . $type . '`) VALUES ' . implode(',', $values));
+            }
+        }
+*/
+
+// delosmod payment_restriction    	
+Db::getInstance()->update('cart_rule', [
+    'payment_restriction' => (int)Tools::getValue('payment_restriction'),
+], 'id_cart_rule='.(int)$currentObject->id);
+// delosmod payment_restriction fin 
+
+// Add restrictions for generic entities (+ module/payment)
+foreach (['country', 'carrier', 'group', 'shop', 'module'] as $type) {
+    $flag = ($type === 'module') ? 'payment_restriction' : ($type . '_restriction');
+    if (Tools::getValue($flag) && is_array($array = Tools::getValue($type . '_select')) && count($array)) {
+        $values = [];
+        foreach ($array as $id) {
+            $values[] = '(' . (int)$currentObject->id . ',' . (int)$id . ')';
+        }
+        Db::getInstance()->execute('INSERT INTO `'._DB_PREFIX_.'cart_rule_' . $type . '` (`id_cart_rule`, `id_' . $type . '`) VALUES ' . implode(',', $values));
+    }
+}
+// delosmod payment_restriction fin
+        
+        // Add cart rule restrictions
+        if (Tools::getValue('cart_rule_restriction') && is_array($array = Tools::getValue('cart_rule_select')) && count($array)) {
+
+-----------
+
+ 
+
+        $carriers = $current_object->getAssociatedRestrictions('carrier', true, true);
+        $modules   = $current_object->getAssociatedRestrictions('module', true, false); // delosmod payment_restriction
+
+        foreach ($carriers as &$carriers2) {
+
+-----------
+
+ 
+
+                'carriers' => $carriers,
+                'modules' => $modules, // delosmod payment_restriction
+                'groups' => $groups,
+
+-----------
+
+ 
+
+---------------------------------------------------
+
+admin\themes\default\template\controllers\cart_rules\conditions.tpl
+
+			</div>
+		{/if}
+
+{* delosmod payment_restriction *}
+<p class="checkbox">
+  <label>
+    <input type="checkbox" id="payment_restriction" name="payment_restriction" value="1" {if $modules.unselected|@count}checked="checked"{/if} />
+    {l s='Payment method selection' d='Admin.Catalog.Feature'}
+  </label>
+</p>
+
+<div id="payment_restriction_div">
+  <br />
+  <table class="table">
+    <tr>
+      <td>
+        <p>{l s='Unselected payment methods' d='Admin.Catalog.Feature'}</p>
+        <select id="module_select_1" class="input-large" multiple>
+          {foreach from=$modules.unselected item='module'}
+            <option value="{$module.id_module|intval}">&nbsp;{$module.name|escape}</option>
+          {/foreach}
+        </select>
+        <a id="module_select_add" class="btn btn-default btn-block clearfix">
+          {l s='Add' d='Admin.Actions'} <i class="icon-arrow-right"></i>
+        </a>
+      </td>
+      <td>
+        <p>{l s='Selected payment methods' d='Admin.Catalog.Feature'}</p>
+        <select name="module_select[]" id="module_select_2" class="input-large" multiple>
+          {foreach from=$modules.selected item='module'}
+            <option value="{$module.id_module|intval}">&nbsp;{$module.name|escape}</option>
+          {/foreach}
+        </select>
+        <a id="module_select_remove" class="btn btn-default btn-block clearfix">
+          <i class="icon-arrow-left"></i> {l s='Remove' d='Admin.Actions'}
+        </a>
+      </td>
+    </tr>
+  </table>
+</div>
+{* delosmod payment_restriction fin *}
+
+		{if ($groups.unselected|@count) + ($groups.selected|@count) > 1}
+			<p class="checkbox">
+
+-----------
+
+ 
+
+							<a id="shop_select_remove" class="btn btn-default btn-block clearfix" ><i class="icon-arrow-left"></i> {l s='Remove' d='Admin.Actions'}</a>
+						</td>
+					</tr>
+				</table>
+			</div>
+		{/if}
+	</div>
+</div>
+
+{* delosmod payment_restriction *}
+{literal}
+<script>
+  (function($){
+    function togglePayment() {
+      $('#payment_restriction_div').toggle( $('#payment_restriction').is(':checked') );
+    }
+
+    $(function(){
+      // show/hide
+      $('#payment_restriction').on('change', togglePayment);
+      togglePayment();
+
+      // move options
+      $('#module_select_add').on('click', function(e){
+        e.preventDefault();
+        $('#module_select_1 option:selected').appendTo('#module_select_2');
+      });
+      $('#module_select_remove').on('click', function(e){
+        e.preventDefault();
+        $('#module_select_2 option:selected').appendTo('#module_select_1');
+      });
+
+      // ensure selected before submit
+      var $form = $('#module_select_2').closest('form');
+      $form.on('submit', function(){
+        $('#module_select_2 option').prop('selected', true);
+      });
+    });
+  })(jQuery);
+</script>
+{/literal}
+{* delosmod payment_restriction fin *}
+
+-----------
+
+---------------------------------------------------
+
+www\classes\PaymentModule.php
+ 
+
+    public function validateOrder(
+        $id_cart,
+        $id_order_state,
+        $amount_paid,
+        $payment_method = 'Unknown',
+        $message = null,
+        $extra_vars = [],
+        $currency_special = null,
+        $dont_touch_amount = false,
+        $secure_key = false,
+        Shop $shop = null
+    ) {
+    	
+    	
+// delosmod payment_restriction   	
+if (Configuration::get('PS_CART_RULE_FEATURE_ACTIVE')) {
+    $cart = new Cart((int)$id_cart);
+    $applied = $cart->getCartRules();
+    if ($applied) {
+      $ids = array_map(function($cr){return (int)$cr['id_cart_rule'];}, $applied);
+      $in = implode(',', $ids);
+      $rows = Db::getInstance()->executeS('
+        SELECT cr.id_cart_rule, cr.payment_restriction, crm.id_module
+        FROM `'._DB_PREFIX_.'cart_rule` cr
+        LEFT JOIN `'._DB_PREFIX_.'cart_rule_module` crm
+          ON (crm.id_cart_rule = cr.id_cart_rule AND crm.id_module='.(int)$this->id.')
+        WHERE cr.id_cart_rule IN ('.$in.')
+      ');
+      foreach ($rows as $row) {
+        if ((int)$row['payment_restriction'] === 1 && (int)$row['id_module'] === 0) {
+          $cart->removeCartRule((int)$row['id_cart_rule']);
+        }
+      }
+      $cart->update();
+    }
+}   	
+// delosmod payment_restriction fin
+
+   	
+        if (self::DEBUG_MODE) {
+
+-----------
+
+---------------------------------------------------
+
+src\Adapter\Presenter\Cart\CartPresenter.php
+
+ 
+
+    public function present($cart, $shouldSeparateGifts = false)
+    {
+    	
+// delosmod payment_restriction
+$ctx = \Context::getContext();
+\CartRule::autoRemoveFromCart($ctx);
+\CartRule::autoAddToCart($ctx);
+// delosmod payment_restriction fin   	    	
+    	
+        if (!is_a($cart, 'Cart')) {
+            throw new \Exception('CartPresenter can only present instance of Cart');
+
+-----------
+
+ 
+
+            $vouchers[$cartVoucher['id_cart_rule']]['delete_url'] = $this->link->getPageLink(
+                'cart',
+                true,
+                null,
+                [
+                    'deleteDiscount' => $cartVoucher['id_cart_rule'],
+                    'token' => Tools::getToken(false),
+                ]
+            );
+
+// delosmod payment_restriction            
+$allowedNames = \Db::getInstance()->executeS('
+  SELECT m.name
+  FROM `'._DB_PREFIX_.'cart_rule_module` crm
+  INNER JOIN `'._DB_PREFIX_.'module` m ON (m.id_module = crm.id_module)
+  WHERE crm.id_cart_rule='.(int)$cartVoucher['id_cart_rule'].'
+');
+$allowedNames = array_map(function($r){ return $r['name']; }, $allowedNames);
+
+$restricted = (int) \Db::getInstance()->getValue('
+  SELECT payment_restriction FROM `'._DB_PREFIX_.'cart_rule`
+  WHERE id_cart_rule='.(int)$cartVoucher['id_cart_rule'].'
+');
+
+$vouchers[$cartVoucher['id_cart_rule']]['payment_methods'] = $allowedNames;
+$vouchers[$cartVoucher['id_cart_rule']]['restricted'] = $restricted;          
+// delosmod payment_restriction fin  
+         
+        }
+
+        return [
+
+-----------
+
+---------------------------------------------------
+
+ 
+
+themes\leo\assets\js\custom.js
+
+Alors ce fichier c'est là où ca va être différent pour vous, si pas de custom.js le rajouter à voir si ca marche, sinon c'est dans le theme.js
+Mais il faut s'attendre à des conflits avec d'autres modules, mais chatgpt est votre amis ;)
+
+ 
+
+// delosmod payment_restriction
+(function(){
+  function setCookie(k, v, mins) {
+    var d = new Date(); d.setTime(d.getTime() + mins*60*1000);
+    document.cookie = k + '=' + encodeURIComponent(v) + ';path=/;expires=' + d.toUTCString();
+  }
+  function getCookie(k){
+    var m=(document.cookie.match(new RegExp('(?:^|;\\s*)'+k+'=([^;]*)'))||[])[1];
+    return m?decodeURIComponent(m):'';
+  }
+  function getModuleName($input){
+    var name = $input.data('module-name') || '';
+    if (!name) {
+      var id = $input.attr('id');
+      var $info = $('#'+id+'-additional-information');
+      name = $info.data('module-name') || '';
+    }
+    return name;
+  }
+
+  function refreshCartBlocks(doublePass){
+    var $cart = $('.js-cart');
+    if (!$cart.length) { location.reload(); return; }
+    var refreshURL = $cart.data('refresh-url');
+
+    function updateDom(resp){
+      $('.cart-detailed-totals').replaceWith(resp.cart_detailed_totals);
+      $('.cart-summary-items-subtotal').replaceWith(resp.cart_summary_items_subtotal);
+      $('.cart-summary-totals').replaceWith(resp.cart_summary_totals);
+      $('.cart-detailed-actions').replaceWith(resp.cart_detailed_actions);
+      $('.cart-voucher').replaceWith(resp.cart_voucher);
+      $('.cart-overview').replaceWith(resp.cart_detailed);
+      $('.cart-summary-subtotals-container').replaceWith(resp.cart_summary_subtotals_container);
+      // re-cocher si besoin
+      var id = getCookie('ps_selected_payment_id'); if (id) $('#'+id).prop('checked', true);
+      prestashop.emit('updatedCart', {reason: 'payment-change'});
+    }
+
+    if (doublePass) {
+      $.post(refreshURL).then(function(){ return $.post(refreshURL); }).then(updateDom);
+    } else {
+      $.post(refreshURL).then(updateDom);
+    }
+  }
+
+  $(document).on('change', 'input[name="payment-option"]', function(){
+    var name = getModuleName($(this)) || '';
+    var id   = this.id || '';
+    setCookie('ps_selected_payment_module', name, 30);
+    setCookie('ps_selected_payment_id', id, 30);
+    refreshCartBlocks(true); // double pass pour ordre des remises
+  });
+
+  // au chargement
+  $(function(){
+    var id = getCookie('ps_selected_payment_id');
+    if (id) $('#'+id).prop('checked', true);
+  });
+})();
+
+// delosmod payment_restriction fin
+
+-----------
