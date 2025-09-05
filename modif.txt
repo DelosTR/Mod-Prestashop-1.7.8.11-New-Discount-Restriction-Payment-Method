@@ -495,29 +495,13 @@ www\classes\PaymentModule.php
     ) {
     	
     	
-// delosmod payment_restriction   	
-if (Configuration::get('PS_CART_RULE_FEATURE_ACTIVE')) {
-    $cart = new Cart((int)$id_cart);
-    $applied = $cart->getCartRules();
-    if ($applied) {
-      $ids = array_map(function($cr){return (int)$cr['id_cart_rule'];}, $applied);
-      $in = implode(',', $ids);
-      $rows = Db::getInstance()->executeS('
-        SELECT cr.id_cart_rule, cr.payment_restriction, crm.id_module
-        FROM `'._DB_PREFIX_.'cart_rule` cr
-        LEFT JOIN `'._DB_PREFIX_.'cart_rule_module` crm
-          ON (crm.id_cart_rule = cr.id_cart_rule AND crm.id_module='.(int)$this->id.')
-        WHERE cr.id_cart_rule IN ('.$in.')
-      ');
-      foreach ($rows as $row) {
-        if ((int)$row['payment_restriction'] === 1 && (int)$row['id_module'] === 0) {
-          $cart->removeCartRule((int)$row['id_cart_rule']);
-        }
-      }
-      $cart->update();
-    }
-}   	
-// delosmod payment_restriction fin
+// delosmod payment_restriction — forcer le module courant (pas de cookie en prod)
+$_COOKIE['ps_selected_payment_module'] = $this->name;
+$ctx = Context::getContext();
+if (!isset($ctx->cart) || (int)$ctx->cart->id !== (int)$id_cart) { $ctx->cart = new Cart((int)$id_cart); }
+CartRule::autoRemoveFromCart($ctx);
+CartRule::autoAddToCart($ctx);
+// fin delosmod
 
    	
         if (self::DEBUG_MODE) {
@@ -654,3 +638,4 @@ Mais il faut s'attendre à des conflits avec d'autres modules, mais chatgpt est 
 // delosmod payment_restriction fin
 
 -----------
+
